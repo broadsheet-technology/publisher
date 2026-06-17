@@ -1,0 +1,23 @@
+name: Publisher Tests
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check action metadata
+        run: ruby -ryaml -e 'YAML.load_file("action.yml")'
+
+      - name: Check shell syntax
+        run: bash -n scripts/plan-tags.sh tests/plan-tags.test.sh
+
+      - name: Run planner tests
+        run: ./tests/plan-tags.test.sh
