@@ -1,0 +1,236 @@
+name: Publish Image
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: Full GHCR image name without a tag.
+        required: true
+        type: string
+      tags:
+        description: Optional newline- or comma-separated raw tag names to publish.
+        required: false
+        default: ""
+        type: string
+      delete-tags:
+        description: Optional newline- or comma-separated tags to delete from GHCR.
+        required: false
+        default: ""
+        type: string
+      prebuild-node:
+        description: Run npm ci and npm run build before building the runtime image.
+        required: false
+        default: false
+        type: boolean
+      node-version:
+        description: Node.js version used when prebuild-node is true.
+        required: false
+        default: "20"
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Plan image tags
+        id: plan
+        env:
+          IMAGE: ${{ inputs.image }}
+          TAGS: ${{ inputs.tags }}
+          DELETE_TAGS: ${{ inputs.delete-tags }}
+        run: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          full_image_tag() {
+            local tag="$1"
+            if [[ "$tag" == *"/"* || "$tag" == *":"* ]]; then
+              echo "::error::tags and delete-tags must contain raw tag names only, not full image tags: $tag" >&2
+              exit 1
+            fi
+            printf '%s:%s\n' "$IMAGE" "$tag"
+          }
+
+          append_publish_tag() {
+            local tag="$1"
+            [ -z "$tag" ] && return 0
+            full_image_tag "$tag" >> "$publish_tags_file"
+          }
+
+          append_delete_tag() {
+            local tag="$1"
+            [ -z "$tag" ] && return 0
+            if [[ "$tag" == *"/"* || "$tag" == *":"* ]]; then
+              echo "::error::tags and delete-tags must contain raw tag names only, not full image tags: $tag" >&2
+              exit 1
+            fi
+            printf '%s\n' "$tag" >> "$delete_tags_file"
+          }
+
+          append_list() {
+            local value="$1"
+            local append_fn="$2"
+            printf '%s\n' "$value" | tr ',' '\n' | while IFS= read -r tag; do
+              tag="$(printf '%s' "$tag" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+              "$append_fn" "$tag"
+            done
+          }
+
+          publish_tags_file="$(mktemp)"
+          delete_tags_file="$(mktemp)"
+          trap 'rm -f "$publish_tags_file" "$delete_tags_file"' EXIT
+
+          append_list "${TAGS:-}" append_publish_tag
+          append_list "${DELETE_TAGS:-}" append_delete_tag
+
+          publish_tags="$(awk 'NF && !seen[$0]++' "$publish_tags_file")"
+          delete_tags="$(awk 'NF && !seen[$0]++' "$delete_tags_file")"
+
+          publish="false"
+          if [ -n "$publish_tags" ]; then
+            publish="true"
+          fi
+
+          delete="false"
+          if [ -n "$delete_tags" ]; then
+            delete="true"
+          fi
+
+          if [ "$publish" != "true" ] && [ "$delete" != "true" ]; then
+            echo "::error::No image tags were planned; provide tags or delete-tags."
+            exit 1
+          fi
+
+          {
+            echo "tags<<EOF"
+            printf '%s\n' "$publish_tags"
+            echo "EOF"
+            echo "delete_tags<<EOF"
+            printf '%s\n' "$delete_tags"
+            echo "EOF"
+            echo "publish=$publish"
+            echo "delete=$delete"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check out repository
+        if: steps.plan.outputs.publish == 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        if: steps.plan.outputs.publish == 'true' && inputs.prebuild-node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+
+      - name: Install Node.js dependencies
+        if: steps.plan.outputs.publish == 'true' && inputs.prebuild-node
+        run: npm ci --prefer-offline --no-audit
+
+      - name: Build Node.js application
+        if: steps.plan.outputs.publish == 'true' && inputs.prebuild-node
+        run: npm run build
+
+      - name: Set up Docker Buildx
+        if: steps.plan.outputs.publish == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: steps.plan.outputs.publish == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and publish image
+        if: steps.plan.outputs.publish == 'true'
+        uses: docker/build-push-action@v6
+        env:
+          DOCKER_BUILD_SUMMARY: "false"
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          platforms: linux/arm64
+          tags: ${{ steps.plan.outputs.tags }}
+          cache-from: type=gha,scope=${{ inputs.image }}
+          cache-to: type=gha,scope=${{ inputs.image }},mode=max
+
+      - name: Delete GHCR tags
+        if: steps.plan.outputs.delete == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ inputs.image }}
+          DELETE_TAGS: ${{ steps.plan.outputs.delete_tags }}
+        run: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          if [[ "$IMAGE" != ghcr.io/* ]]; then
+            echo "::error::delete-tags currently supports GHCR images only."
+            exit 1
+          fi
+
+          image_path="${IMAGE#ghcr.io/}"
+          if [[ "$image_path" != */* ]]; then
+            echo "::error::image must include a GHCR owner and package: $IMAGE"
+            exit 1
+          fi
+
+          owner="${image_path%%/*}"
+          package="${image_path#*/}"
+          encoded_package="$(jq -rn --arg value "$package" '$value|@uri')"
+
+          owner_type="$(gh api "/users/$owner" --jq '.type')"
+          case "$owner_type" in
+            Organization)
+              versions_path="/orgs/$owner/packages/container/$encoded_package/versions"
+              ;;
+            User)
+              versions_path="/users/$owner/packages/container/$encoded_package/versions"
+              ;;
+            *)
+              echo "::error::Unsupported GHCR owner type for $owner: $owner_type"
+              exit 1
+              ;;
+          esac
+
+          lookup_stdout="$(mktemp)"
+          lookup_stderr="$(mktemp)"
+          trap 'rm -f "$lookup_stdout" "$lookup_stderr"' EXIT
+
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+
+            : > "$lookup_stdout"
+            : > "$lookup_stderr"
+            if gh api "$versions_path" --paginate --jq ".[] | select(.metadata.container.tags[]? == \"$tag\") | .id" \
+              >"$lookup_stdout" 2>"$lookup_stderr"; then
+              ids="$(cat "$lookup_stdout")"
+            else
+              if grep -Eq 'HTTP 404|"status"[[:space:]]*:[[:space:]]*"?404"?' "$lookup_stdout" "$lookup_stderr"; then
+                continue
+              fi
+              if [ -s "$lookup_stdout" ]; then
+                cat "$lookup_stdout" >&2
+              fi
+              if [ -s "$lookup_stderr" ]; then
+                cat "$lookup_stderr" >&2
+              fi
+              exit 1
+            fi
+
+            [ -z "$ids" ] && continue
+
+            while IFS= read -r id; do
+              [ -z "$id" ] && continue
+              gh api --method DELETE "$versions_path/$id"
+              echo "::notice::Deleted GHCR package version $id for $IMAGE:$tag"
+            done <<< "$ids"
+          done <<< "$DELETE_TAGS"
