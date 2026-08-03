@@ -125,11 +125,15 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node-version }}
+          registry-url: https://npm.pkg.github.com
+          scope: "@broadsheet-technology"
           cache: npm
 
       - name: Install Node.js dependencies
         if: steps.plan.outputs.publish == 'true' && inputs.prebuild-node
         run: npm ci --prefer-offline --no-audit
+        env:
+          NODE_AUTH_TOKEN: ${{ github.token }}
 
       - name: Build Node.js application
         if: steps.plan.outputs.publish == 'true' && inputs.prebuild-node
