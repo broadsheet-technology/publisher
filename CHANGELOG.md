@@ -2,6 +2,26 @@
 
 All notable changes to Publisher are documented in this file.
 
+## [v4] - 2026-08-04
+
+### Added
+
+- Add the optional `BT_PACKAGE_TOKEN` reusable-workflow secret for private GitHub Packages dependencies, with `github.token` as the fallback.
+- Add the `prune-node` input to remove development dependencies after a successful worker-side build.
+- Add static workflow coverage for the v4 interface, npm token isolation, Node preparation conditions, and documentation references.
+
+### Changed
+
+- Use Node.js 24 by default for worker-side Node preparation.
+- Document runtime-only Dockerfiles for packaging worker-prepared build output and production dependencies.
+
+## [v3] - 2026-08-03
+
+### Changed
+
+- Configure worker-side npm installs for the `@broadsheet-technology` scope at `https://npm.pkg.github.com`.
+- Authenticate worker-side dependency installation with the reusable workflow's `github.token`.
+
 ## [v2]
 
 ### Changed

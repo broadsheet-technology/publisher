@@ -22,11 +22,20 @@ on:
         required: false
         default: false
         type: boolean
+      prune-node:
+        description: Prune development dependencies after a Node.js prebuild.
+        required: false
+        default: false
+        type: boolean
       node-version:
         description: Node.js version used when prebuild-node is true.
         required: false
-        default: "20"
+        default: "24"
         type: string
+    secrets:
+      BT_PACKAGE_TOKEN:
+        description: Optional token for installing private GitHub Packages dependencies.
+        required: false
 
 permissions:
   contents: read
@@ -133,11 +142,15 @@ jobs:
         if: steps.plan.outputs.publish == 'true' && inputs.prebuild-node
         run: npm ci --prefer-offline --no-audit
         env:
-          NODE_AUTH_TOKEN: ${{ github.token }}
+          NODE_AUTH_TOKEN: ${{ secrets.BT_PACKAGE_TOKEN || github.token }}
 
       - name: Build Node.js application
         if: steps.plan.outputs.publish == 'true' && inputs.prebuild-node
         run: npm run build
+
+      - name: Prune Node.js development dependencies
+        if: steps.plan.outputs.publish == 'true' && inputs.prebuild-node && inputs.prune-node
+        run: npm prune --omit=dev --no-audit
 
       - name: Set up Docker Buildx
         if: steps.plan.outputs.publish == 'true'

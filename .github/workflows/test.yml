@@ -39,3 +39,4 @@ jobs:
         run: |
           ./tests/plan-tags.test.sh
           ./tests/delete-tags.test.sh
+          ./tests/workflow.test.sh
