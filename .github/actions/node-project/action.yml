@@ -1,0 +1,53 @@
+name: Build Node project
+description: Set up Node 24, optionally update the version and test, then build and prune.
+
+inputs:
+  version:
+    description: Release version to write before validation; empty leaves it unchanged.
+    default: ""
+  test:
+    description: Run the project test suite before building.
+    default: "false"
+  package-token:
+    description: Token for private GitHub Packages dependencies.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: "24"
+        registry-url: https://npm.pkg.github.com
+        scope: "@broadsheet-technology"
+        cache: npm
+        cache-dependency-path: candidate/package-lock.json
+    - name: Update package version
+      if: inputs.version != ''
+      shell: bash
+      working-directory: candidate
+      env:
+        RELEASE_VERSION: ${{ inputs.version }}
+        PUBLISHER_ACTION_PATH: ${{ github.action_path }}
+      run: node "$PUBLISHER_ACTION_PATH/../../../scripts/package-version.cjs" "$RELEASE_VERSION"
+    - name: Install dependencies
+      shell: bash
+      working-directory: candidate
+      env:
+        NODE_AUTH_TOKEN: ${{ inputs.package-token }}
+      run: npm ci --prefer-offline --no-audit
+    - name: Run tests
+      if: inputs.test == 'true'
+      shell: bash
+      working-directory: candidate
+      run: npm test
+    - name: Build application
+      shell: bash
+      working-directory: candidate
+      run: npm run build
+    - name: Prune development dependencies
+      shell: bash
+      working-directory: candidate
+      env:
+        NODE_AUTH_TOKEN: ${{ inputs.package-token }}
+      run: npm prune --omit=dev --no-audit

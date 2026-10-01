@@ -12,31 +12,45 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Check workflow metadata
-        run: ruby -ryaml -e 'YAML.load_file(".github/workflows/publish.yml")'
-
-      - name: Check embedded tag planner
-        run: |
-          ruby -ryaml -e '
-            workflow = YAML.load_file(".github/workflows/publish.yml")
-            planner = workflow.fetch("jobs").fetch("image").fetch("steps").find { |step| step["name"] == "Plan image tags" }
-            abort "embedded tag planner differs from scripts/plan-tags.sh" unless planner.fetch("run") == File.read("scripts/plan-tags.sh")
-          '
-
-      - name: Check embedded tag deleter
-        run: |
-          ruby -ryaml -e '
-            workflow = YAML.load_file(".github/workflows/publish.yml")
-            deleter = workflow.fetch("jobs").fetch("image").fetch("steps").find { |step| step["name"] == "Delete GHCR tags" }
-            abort "embedded tag deleter differs from scripts/delete-tags.sh" unless deleter.fetch("run") == File.read("scripts/delete-tags.sh")
-          '
-
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
       - name: Check shell syntax
-        run: bash -n scripts/*.sh tests/*.test.sh tests/fixtures/gh
-
-      - name: Run tests
         run: |
-          ./tests/plan-tags.test.sh
-          ./tests/delete-tags.test.sh
-          ./tests/workflow.test.sh
+          for script in scripts/*.sh; do
+            bash -n "$script"
+          done
+      - name: Run tests
+        run: node --test tests/*.test.cjs
+
+  release:
+    name: Publish v5 tag
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: publisher-v5
+      cancel-in-progress: false
+    steps:
+      - name: Point v5 at tested main
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const repo = context.repo;
+            const {data: main} = await github.rest.git.getRef({...repo, ref: 'heads/main'});
+            if (main.object.sha !== context.sha) {
+              core.info('Main advanced; its own test run will publish v5.');
+              return;
+            }
+            const ref = 'tags/v5';
+            try {
+              await github.rest.git.getRef({...repo, ref});
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              await github.rest.git.createRef({...repo, ref: `refs/${ref}`, sha: context.sha});
+              return;
+            }
+            await github.rest.git.updateRef({...repo, ref, sha: context.sha, force: true});

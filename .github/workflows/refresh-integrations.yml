@@ -1,0 +1,32 @@
+name: Refresh Integration Branches
+
+on:
+  workflow_call:
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: publish-${{ github.repository }}
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !github.event.deleted
+    steps:
+      - name: Check out publisher automation
+        uses: actions/checkout@v4
+        with:
+          repository: broadsheet-technology/publisher
+          ref: v5
+          path: .publisher
+          persist-credentials: false
+      - name: Advance open integration bases
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {refresh} = require(`${process.env.GITHUB_WORKSPACE}/.publisher/scripts/integration-branches.cjs`);
+            await refresh({github, context, core});
