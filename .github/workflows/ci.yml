@@ -1,0 +1,64 @@
+name: Publisher CI
+
+# Publisher's major release tag. Bump this and the reusable workflows' checkout
+# refs together; the test suite verifies that they match.
+env:
+  PUBLISHER_VERSION: v5
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Check shell syntax
+        run: |
+          for script in scripts/*.sh; do
+            bash -n "$script"
+          done
+      - name: Run tests
+        run: node --test tests/*.test.cjs
+
+  release:
+    name: Publish release tag
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: publisher-release
+      cancel-in-progress: false
+    steps:
+      - name: Point release tag at tested main
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const version = process.env.PUBLISHER_VERSION;
+            if (!/^v[1-9]\d*$/.test(version)) throw new Error('Invalid Publisher major version');
+            const repo = context.repo;
+            const {data: main} = await github.rest.git.getRef({...repo, ref: 'heads/main'});
+            if (main.object.sha !== context.sha) {
+              core.info(`Main advanced; its own test run will publish ${version}.`);
+              return;
+            }
+            const ref = `tags/${version}`;
+            try {
+              await github.rest.git.getRef({...repo, ref});
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              await github.rest.git.createRef({...repo, ref: `refs/${ref}`, sha: context.sha});
+              return;
+            }
+            await github.rest.git.updateRef({...repo, ref, sha: context.sha, force: true});
