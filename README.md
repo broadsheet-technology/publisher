@@ -211,7 +211,20 @@ that would make caller and callee wait on each other.
 
 ## Releasing Publisher
 
-Merge Publisher changes to `main`. After the Publisher Tests job passes on a
+Publisher's own major version is declared at the top of
+`.github/workflows/ci.yml`:
+
+```yaml
+env:
+  PUBLISHER_VERSION: v5
+```
+
+For v6, change this value to `v6` and update the reusable workflows' Publisher
+checkout refs to `v6`. Tests enforce that these refs match the declared version.
+Update the usage examples and changelog with the new major version as well.
+This setting is independent of consumers' calendar or semantic versioning.
+
+Merge Publisher changes to `main`. After the Publisher CI test job passes on a
 push to `main`, the release job creates or updates the moving `v5` tag to that
 tested commit. PRs and other branches cannot update the release tag; outdated
 runs cannot move it back after a newer main commit has been tested.

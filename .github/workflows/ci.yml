@@ -1,4 +1,9 @@
-name: Publisher Tests
+name: Publisher CI
+
+# Publisher's major release tag. Bump this and the reusable workflows' checkout
+# refs together; the test suite verifies that they match.
+env:
+  PUBLISHER_VERSION: v5
 
 on:
   pull_request:
@@ -9,6 +14,7 @@ permissions:
 
 jobs:
   test:
+    name: Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,27 +31,29 @@ jobs:
         run: node --test tests/*.test.cjs
 
   release:
-    name: Publish v5 tag
+    name: Publish release tag
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     concurrency:
-      group: publisher-v5
+      group: publisher-release
       cancel-in-progress: false
     steps:
-      - name: Point v5 at tested main
+      - name: Point release tag at tested main
         uses: actions/github-script@v7
         with:
           script: |
+            const version = process.env.PUBLISHER_VERSION;
+            if (!/^v[1-9]\d*$/.test(version)) throw new Error('Invalid Publisher major version');
             const repo = context.repo;
             const {data: main} = await github.rest.git.getRef({...repo, ref: 'heads/main'});
             if (main.object.sha !== context.sha) {
-              core.info('Main advanced; its own test run will publish v5.');
+              core.info(`Main advanced; its own test run will publish ${version}.`);
               return;
             }
-            const ref = 'tags/v5';
+            const ref = `tags/${version}`;
             try {
               await github.rest.git.getRef({...repo, ref});
             } catch (error) {

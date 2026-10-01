@@ -80,14 +80,14 @@ test('composite action shell steps have explicit shells and valid syntax', () =>
   }
 });
 
-test('release workflows load Publisher automation from v5', () => {
+test('release workflows match the declared Publisher version', () => {
   let checkouts = 0;
   for (const [file, doc] of Object.entries(documents)) {
     if (!doc.jobs) continue;
     for (const job of Object.values(doc.jobs)) {
       for (const step of job.steps || []) {
         if (step.with?.repository !== 'broadsheet-technology/publisher') continue;
-        assert.equal(step.with.ref, 'v5', file);
+        assert.equal(step.with.ref, workflow('ci').env.PUBLISHER_VERSION, file);
         checkouts++;
       }
     }
@@ -95,8 +95,8 @@ test('release workflows load Publisher automation from v5', () => {
   assert.equal(checkouts, 7);
 });
 
-test('v5 publication requires successful main tests and never tags a PR or stale run', async () => {
-  const job = workflow('test').jobs.release;
+test('major version publication requires successful main tests and never tags a PR or stale run', async () => {
+  const job = workflow('ci').jobs.release;
   assert.equal(job.needs, 'test');
   assert.equal(job.permissions.contents, 'write');
   const enabled = new Function('github', `return (${job.if});`);
@@ -104,7 +104,8 @@ test('v5 publication requires successful main tests and never tags a PR or stale
   assert.equal(enabled({event_name: 'pull_request', ref: 'refs/heads/main'}), false);
   assert.equal(enabled({event_name: 'push', ref: 'refs/heads/feature'}), false);
   const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
-  const publish = new AsyncFunction('github', 'context', 'core', job.steps[0].with.script);
+  const publish = new AsyncFunction('github', 'context', 'core', 'process', job.steps[0].with.script);
+  const version = 'v6';
   for (const state of ['existing', 'missing', 'stale', 'denied']) {
     const writes = [];
     const github = {rest: {git: {
@@ -117,11 +118,11 @@ test('v5 publication requires successful main tests and never tags a PR or stale
       updateRef: async args => writes.push({method: 'update', ...args}),
     }}};
     const repo = {owner: 'org', repo: 'publisher'};
-    const result = publish(github, {repo, sha: 'tested'}, {info: () => {}});
+    const result = publish(github, {repo, sha: 'tested'}, {info: () => {}}, {env: {PUBLISHER_VERSION: version}});
     if (state === 'denied') await assert.rejects(result, /denied/);
     else await result;
-    const expected = state === 'existing' ? [{method: 'update', ...repo, ref: 'tags/v5', sha: 'tested', force: true}]
-      : state === 'missing' ? [{method: 'create', ...repo, ref: 'refs/tags/v5', sha: 'tested'}] : [];
+    const expected = state === 'existing' ? [{method: 'update', ...repo, ref: `tags/${version}`, sha: 'tested', force: true}]
+      : state === 'missing' ? [{method: 'create', ...repo, ref: `refs/tags/${version}`, sha: 'tested'}] : [];
     assert.deepEqual(writes, expected, state);
   }
 });
