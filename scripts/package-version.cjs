@@ -1,11 +1,6 @@
 const fs = require('node:fs');
 
-function releaseVersion(value) {
-  if (!/^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[\w.-]+)?$/.test(value)) {
-    throw new Error('Invalid package version');
-  }
-  return `v${value.replace(/^v/, '')}`;
-}
+const {releaseVersion} = require('./versions.cjs');
 
 if (require.main === module) {
   const version = releaseVersion(process.argv[2]);
@@ -18,5 +13,3 @@ if (require.main === module) {
     fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
   }
 }
-
-module.exports = {releaseVersion};

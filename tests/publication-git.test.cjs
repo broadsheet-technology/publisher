@@ -67,11 +67,11 @@ function repository(t) {
     return run('bash', ['-e', '-c', step.run], work, {...env, GITHUB_WORKSPACE: dir}, ok);
   }
   const output = path.join(dir, 'outputs');
-  function release(candidate) {
+  function release(candidate, versioning = 'semantic') {
     git('checkout', '--detach', candidate.sha);
     fs.writeFileSync(output, '');
     script('prepare-publication.sh', {...candidate.env, GITHUB_OUTPUT: output});
-    script('calculate-version.sh', {...candidate.env, RELEASE_INTENT: 'release:patch', GITHUB_OUTPUT: output});
+    workflowStep('Calculate release version', {...candidate.env, VERSIONING: versioning, RELEASE_INTENT: 'release:patch', GITHUB_OUTPUT: output});
     const values = Object.fromEntries(fs.readFileSync(output, 'utf8').trim().split('\n').map(line => line.split('=')));
     run('node', [path.join(root, 'scripts/package-version.cjs'), values.version], work);
     const env = {...candidate.env, RELEASE_BASE: values.base, RELEASE_VERSION: values.version, RELEASE_TAG: values.tag, GITHUB_OUTPUT: output};
@@ -208,4 +208,21 @@ test('legacy publication is recognized by ancestry without a merge trailer', t =
     assert.notEqual(result.status, 0);
     assert.match(result.stdout, /already on the release branch|Candidate was promoted/);
   }
+});
+
+test('queued calendar releases increment tags and keep matching package versions and trailers', t => {
+  const f = repository(t);
+  const first = f.candidate(1);
+  const second = f.candidate(2);
+  const release1 = f.release(first, '');
+  f.git('tag', '-d', release1.tag);
+  const release2 = f.release(second, '');
+  const prefix1 = release1.version.slice(0, release1.version.lastIndexOf('.'));
+  const prefix2 = release2.version.slice(0, release2.version.lastIndexOf('.'));
+  // Midnight between runs legitimately starts a new day's counter.
+  assert.equal(release2.version, `${prefix2}.${prefix1 === prefix2 ? 2 : 1}`);
+  assert.equal(f.git('show', '-s', '--format=%(trailers:key=version,valueonly)'), release2.version);
+  assert.equal(JSON.parse(f.git('show', 'HEAD:package.json')).version, release2.version);
+  assert.equal(f.git('rev-list', '--count', `${f.base}..HEAD`), '2');
+  assert.equal(f.git('rev-parse', `${release2.tag}^{commit}`), release2.sha);
 });

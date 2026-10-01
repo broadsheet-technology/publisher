@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const {execFileSync} = require('node:child_process');
-const {releaseVersion} = require('./package-version.cjs');
+const {releaseVersion} = require('./versions.cjs');
 
 function parseTags(value = '') {
   const tags = [...new Set(value.split(/[\n,]/).map(tag => tag.trim()).filter(Boolean))];

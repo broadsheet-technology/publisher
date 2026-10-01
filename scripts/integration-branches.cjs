@@ -80,7 +80,7 @@ function validateBase(pr) {
   throw new Error(`Pull requests must target ${branch} unless authorized to target main.`);
 }
 
-async function identifySource({github, context, core}) {
+async function identifySource({github, context, core}, versioning = 'calendar') {
   core.setOutput('candidate', 'false');
   if (context.eventName !== 'push' || context.payload.created || context.payload.deleted) return;
   const branch = context.ref.replace(/^refs\/heads\//, '');
@@ -104,7 +104,7 @@ async function identifySource({github, context, core}) {
   core.setOutput('branch', branch);
   core.setOutput('merge-sha', context.sha);
   core.setOutput('title', pr.title);
-  core.setOutput('intent', releaseIntent(pr));
+  core.setOutput('intent', releaseIntent(pr, versioning));
   core.setOutput('candidate', 'true');
 }
 
@@ -137,7 +137,9 @@ async function annotateRecovery({github, context, core}, env = process.env) {
   if (failure) core.setFailed(`The merge was reverted and annotated, but reopening failed: ${failure.message}`);
 }
 
-function releaseIntent(pr) {
+function releaseIntent(pr, versioning = 'calendar') {
+  if (versioning === 'calendar') return '';
+  if (versioning !== 'semantic') throw new Error('Versioning must be semantic or calendar');
   const labels = pr.labels.map(label => label.name).filter(name => name.startsWith('release:'));
   if (labels.length !== 1 || !/^release:(major|minor|patch|none)$/.test(labels[0])) {
     throw new Error('Expected exactly one release:major, release:minor, release:patch, or release:none label');
@@ -145,11 +147,11 @@ function releaseIntent(pr) {
   return labels[0];
 }
 
-function validateMetadata(pr) {
+function validateMetadata(pr, versioning = 'calendar') {
   if (!/^(feat|fix|perf|refactor|build|ci|docs|test|style|chore|revert)(\([A-Za-z0-9._/-]+\))?!?: \S.*$/.test(pr.title || '')) {
     throw new Error('Pull request title must use Conventional Commit syntax: <type>(optional-scope)!: description');
   }
-  releaseIntent(pr);
+  releaseIntent(pr, versioning);
   validateBase(pr);
 }
 

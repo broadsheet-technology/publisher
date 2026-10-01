@@ -2,6 +2,11 @@ name: Validate Pull Request Metadata
 
 on:
   workflow_call:
+    inputs:
+      versioning:
+        description: Version convention (semantic or calendar).
+        type: string
+        default: calendar
 
 permissions:
   contents: read
@@ -19,9 +24,11 @@ jobs:
           path: .publisher
           persist-credentials: false
       - name: Validate current pull request metadata
+        env:
+          VERSIONING: ${{ inputs.versioning }}
         uses: actions/github-script@v7
         with:
           script: |
             const {validateMetadata} = require(`${process.env.GITHUB_WORKSPACE}/.publisher/scripts/integration-branches.cjs`);
             const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: context.payload.pull_request.number});
-            validateMetadata(pr);
+            validateMetadata(pr, process.env.VERSIONING);

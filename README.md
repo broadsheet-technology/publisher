@@ -13,8 +13,9 @@ Employs the following workflows:
 - Release branch: `main`.
 - Integration branch: `merge/<PR number>/<source branch>`.
 - PR titles use Conventional Commit syntax.
-- Exactly one of `release:major`, `release:minor`, `release:patch`, or
-  `release:none` is required.
+- Calendar versioning is the default and needs no release label. Explicit
+  semantic versioning requires exactly one of `release:major`, `release:minor`,
+  `release:patch`, or `release:none`. `release:none` advances the patch version.
 - Bot PRs and PRs labeled `base:main-authorized` may target `main` directly.
 - Node builds use Node 24, `npm ci`, `npm run build`, and production dependency
   pruning. Validation also runs `npm test`.
@@ -69,16 +70,15 @@ publish. Branch creation/deletion, refresh pushes, recovery commits, and stale
 candidates are skipped. The workflow:
 
 1. Merges current `main` into the candidate and fetches release tags.
-2. Calculates the semantic version from the newest stable `vX.Y.Z` tag and the
-   source PR's release label, starting at `v0.0.0` when there are no release tags.
-3. Writes the `vX.Y.Z` version to `package.json` and the project entries in
+2. Calculates the next version using the selected convention and fetched tags.
+3. Writes the version to `package.json` and the project entries in
    `package-lock.json`, tests, builds, and prunes.
 4. Squashes the validated changes and version update into one commit directly
    on current `main`, with the PR title and number. Both author and committer
    use the source merge's author identity. The commit has `pr`,
-   `merge`, and `version: vX.Y.Z` trailers. It is fast-forwarded
-   to `main` and tagged `vX.Y.Z`.
-5. Publishes the prepared checkout with the release SHA, `vX.Y.Z`, and
+   `merge`, and `version` trailers in one contiguous block after a blank line.
+   It is fast-forwarded to `main` and tagged with the same version.
+5. Publishes the prepared checkout with the release SHA, version, and
    `latest` image tags.
 6. Deletes the integration branch only after image publication succeeds,
    refreshes other open integration bases, and reports the outcome on the PR.
@@ -98,6 +98,36 @@ the release on `main`; retry the image workflow on the release tag rather than
 reverting a published candidate. Cleanup and refresh failures are reported
 separately. A successful standalone image retry does not remove a retained
 integration branch automatically.
+
+## Version conventions
+
+`publish-strategy.yml` and `pr-validate.yml` accept `versioning`, which defaults
+to `calendar`. To use semantic versioning, pass `versioning: semantic` to both
+workflows.
+
+- `semantic`: increment the newest stable `vX.Y.Z` tag according to the PR's
+  release label, starting from `v0.0.0`. Calendar and prerelease tags are ignored.
+- `calendar`: use `vYY.M.D.N`, where the year has two digits and month/day have
+  no leading zero. The counter is one greater than the highest published tag
+  for that date, or 1 when none exists. Semantic release labels are ignored.
+  For example: `v26.10.1.1`, `v26.10.1.2`, then `v26.10.2.1`.
+
+Calendar publication accepts `timezone` (an IANA timezone, default `UTC`).
+Use `timezone: America/Chicago` to reset the counter at Chicago midnight.
+The date is evaluated once when the serialized release calculates its version,
+so crossing midnight during the build does not change that release's version.
+
+```yaml
+jobs:
+  publish:
+    uses: broadsheet-technology/publisher/.github/workflows/publish-strategy.yml@v5
+    with:
+      timezone: America/Chicago
+```
+
+Package files, commit trailers, Git tags, and image tags all retain the exact
+prefixed version. Calendar versions are for applications packaged as images;
+the four-part format is not an npm package's semantic version.
 
 ## Images and staging
 
@@ -155,7 +185,8 @@ only to npm package operations, never to Docker. The selected token needs read
 access to private dependencies. GHCR login always uses `github.token`.
 
 Consumers must allow release commits and tags to be pushed by their workflow
-token and provide the semantic release labels and `stage` label. Configure
+token and provide the `stage` label (plus release labels for semantic
+versioning). Configure
 required metadata/application checks for `merge/**`.
 
 ## Recovery and refresh

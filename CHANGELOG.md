@@ -8,10 +8,11 @@ All notable changes to Publisher are documented in this file.
 - Share Node preparation and Docker publishing through composite actions.
 - Infer stage/release image tags and protect package versions with unrelated tags during cleanup.
 - Consolidate metadata and release-label validation; derive recovery branches from PRs.
-- Remove unused branch/label/runtime overrides, arbitrary command hooks, date versioning, automation-token inputs, and downstream release outputs.
+- Remove unused branch/label/runtime overrides, arbitrary command hooks, automation-token inputs, and downstream release outputs.
 - Keep explicit image/tag inputs and optional Node prebuild for existing image consumers.
 - Squash each validated application release into one developer-attributed commit with contiguous `pr`, `merge`, and `version` trailers.
-- Use `vX.Y.Z` consistently in project version files, release trailers, Git tags, and image tags.
+- Default to `vYY.M.D.N` calendar versions and retain optional semantic versions with a configurable daily-reset timezone.
+- Preserve the chosen version in project files, release trailers, Git tags, and image tags; require semantic release labels only in semantic mode.
 - Remove temporary branch-testing triggers and pin Publisher's internal checkouts to `v5`.
 - Publish the moving `v5` tag after successful tests on `main`; preserve the `v1` through `v4` interfaces.
 

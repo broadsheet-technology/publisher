@@ -166,7 +166,7 @@ function candidate() {
 test('publication identifies only the exact merged PR and branch tip', async () => {
   const f = candidate();
   await identifySource(f);
-  assert.deepEqual(f.outputs, {candidate: 'true', number: 12, branch: 'merge/12/feature/nested', 'merge-sha': 'merge-sha', title: 'feat: publish', intent: 'release:patch'});
+  assert.deepEqual(f.outputs, {candidate: 'true', number: 12, branch: 'merge/12/feature/nested', 'merge-sha': 'merge-sha', title: 'feat: publish', intent: ''});
 });
 
 test('creation, deletion, refresh, recovery, other-base, stale and missing refs do not publish', async () => {
@@ -192,7 +192,7 @@ test('creation, deletion, refresh, recovery, other-base, stale and missing refs 
 test('invalid labels fail with recovery identifiers available', async () => {
   const f = candidate();
   f.context.payload.pull_request.labels = [];
-  await assert.rejects(identifySource(f), /release/);
+  await assert.rejects(identifySource(f, 'semantic'), /release/);
   assert.equal(f.outputs.number, 12);
   assert.equal(f.outputs.candidate, 'false');
 });
@@ -229,11 +229,11 @@ test('metadata and publication share one semantic release label policy', () => {
   const base = pr(12, {title: 'feat(api)!: ship', base: {ref: 'merge/12/feature/nested'}});
   for (const intent of ['major', 'minor', 'patch', 'none']) {
     const value = {...base, labels: [{name: 'stage'}, {name: `release:${intent}`}]};
-    validateMetadata(value);
-    assert.equal(releaseIntent(value), `release:${intent}`);
+    validateMetadata(value, 'semantic');
+    assert.equal(releaseIntent(value, 'semantic'), `release:${intent}`);
   }
   for (const labels of [[], [{name: 'release:date'}], [{name: 'release:major'}, {name: 'release:patch'}], [{name: 'release:patch'}, {name: 'release:typo'}]]) {
-    assert.throws(() => validateMetadata({...base, labels}), /release/);
+    assert.throws(() => validateMetadata({...base, labels}, 'semantic'), /release/);
   }
   assert.throws(() => validateMetadata({...base, title: 'unstructured title'}), /Conventional/);
   validateMetadata({...base, title: 'fix: x'});
@@ -249,4 +249,18 @@ test('publication reporting distinguishes image failure after promotion from val
   await reportPublication(f, {SOURCE_PR: '12', PUBLISHED: 'true', RELEASE_TAG: 'v1.0.0', CLEANUP_OUTCOME: 'failure'});
   assert.match(f.comments[2].body, /Published image and release v1.0.0/);
   assert.equal(f.warnings.length, 1);
+});
+
+test('calendar metadata and publication default to no semantic release label', async () => {
+  const value = pr(12, {title: 'fix: calendar release', labels: [], base: {ref: 'merge/12/feature/nested'}});
+  validateMetadata(value);
+  assert.equal(releaseIntent(value), '');
+  assert.throws(() => validateMetadata(value, 'semantic'), /release/);
+  assert.throws(() => validateMetadata({...value, title: 'invalid'}, 'calendar'), /Conventional/);
+  assert.throws(() => validateMetadata(value, 'typo'), /Versioning/);
+  const f = candidate();
+  f.context.payload.pull_request.labels = [];
+  await identifySource(f);
+  assert.equal(f.outputs.candidate, 'true');
+  assert.equal(f.outputs.intent, '');
 });

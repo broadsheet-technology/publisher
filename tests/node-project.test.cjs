@@ -90,8 +90,8 @@ test('semantic version selection ignores prerelease/non-semantic tags and preser
   const output = path.join(f.dir, 'version');
   for (const [intent, expected] of [['major', '2.0.0'], ['minor', '1.3.0'], ['patch', '1.2.4'], ['none', '1.2.4']]) {
     fs.writeFileSync(output, '');
-    execFileSync('bash', [path.join(root, 'scripts/calculate-version.sh')], {cwd: f.dir,
-      env: {...f.env, RELEASE_INTENT: `release:${intent}`, GITHUB_OUTPUT: output}});
+    execFileSync('node', [path.join(root, 'scripts/versions.cjs')], {cwd: f.dir,
+      env: {...f.env, VERSIONING: 'semantic', RELEASE_INTENT: `release:${intent}`, GITHUB_OUTPUT: output}});
     assert.equal(fs.readFileSync(output, 'utf8'), `version=v${expected}\ntag=v${expected}\n`);
   }
 });
@@ -116,4 +116,20 @@ test('version updates preserve dependency versions and reject invalid input befo
   const invalid = spawnSync('node', [path.join(root, 'scripts/package-version.cjs'), 'vv2.0.0'], {cwd: f.dir});
   assert.notEqual(invalid.status, 0);
   assert.deepEqual([fs.readFileSync(pkgFile, 'utf8'), fs.readFileSync(lockFile, 'utf8')], before);
+});
+
+test('calendar versions survive install, test, build, prune, lockfiles, and image tagging', t => {
+  const f = fixture(t);
+  const version = 'v26.10.1.1';
+  const result = f.prepare(version, true);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(f.dir, 'package.json'))).version, version);
+  const lock = JSON.parse(fs.readFileSync(path.join(f.dir, 'package-lock.json')));
+  assert.equal(lock.version, version);
+  assert.equal(lock.packages[''].version, version);
+  for (const file of ['tested', 'built']) assert.equal(fs.readFileSync(path.join(f.dir, file), 'utf8'), version);
+  const output = path.join(f.dir, 'outputs');
+  execFileSync('node', [path.join(root, 'scripts/images.cjs'), 'tags'], {cwd: f.dir,
+    env: {...f.env, IMAGE: 'ghcr.io/org/app', GITHUB_OUTPUT: output}});
+  assert.equal(fs.readFileSync(output, 'utf8'), `tags=ghcr.io/org/app:${f.git('rev-parse', 'HEAD')},ghcr.io/org/app:${version},ghcr.io/org/app:latest\n`);
 });

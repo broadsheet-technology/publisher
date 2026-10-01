@@ -125,3 +125,19 @@ test('v5 publication requires successful main tests and never tags a PR or stale
     assert.deepEqual(writes, expected, state);
   }
 });
+
+test('metadata and publication expose calendar defaults and forward calendar configuration', () => {
+  const publish = workflow('publish-strategy');
+  const metadata = workflow('pr-validate');
+  for (const doc of [publish, metadata]) {
+    assert.equal(doc.true.workflow_call.inputs.versioning.default, 'calendar');
+  }
+  assert.equal(publish.true.workflow_call.inputs.timezone.default, 'UTC');
+  const steps = publish.jobs.publish.steps;
+  assert.equal(steps.find(step => step.id === 'source').env.VERSIONING, '${{ inputs.versioning }}');
+  const calculate = steps.find(step => step.id === 'version');
+  assert.equal(calculate.env.VERSIONING, '${{ inputs.versioning }}');
+  assert.equal(calculate.env.VERSION_TIMEZONE, '${{ inputs.timezone }}');
+  const validate = metadata.jobs.metadata.steps.find(step => step.env?.VERSIONING);
+  assert.equal(validate.env.VERSIONING, '${{ inputs.versioning }}');
+});
