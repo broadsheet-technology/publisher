@@ -1,0 +1,144 @@
+name: Publish Node Release
+
+on:
+  workflow_call:
+    inputs:
+      versioning:
+        description: Version convention (semantic or calendar).
+        type: string
+        default: calendar
+      timezone:
+        description: IANA timezone for the calendar version's daily reset.
+        type: string
+        default: UTC
+    secrets:
+      BT_PACKAGE_TOKEN:
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  packages: write
+
+concurrency:
+  group: publish-${{ github.repository }}
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04-arm
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/merge/') && !github.event.created && !github.event.deleted
+    defaults:
+      run:
+        working-directory: candidate
+    steps:
+      - name: Check out publisher automation
+        uses: actions/checkout@v4
+        with:
+          repository: broadsheet-technology/publisher
+          ref: v5
+          path: .publisher
+          persist-credentials: false
+      - name: Identify source pull request
+        env:
+          VERSIONING: ${{ inputs.versioning }}
+        id: source
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {identifySource} = require(`${process.env.GITHUB_WORKSPACE}/.publisher/scripts/integration-branches.cjs`);
+            await identifySource({github, context, core}, process.env.VERSIONING);
+      - name: Check out publication candidate
+        if: steps.source.outputs.candidate == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: candidate
+          fetch-depth: 0
+      - name: Merge current released main
+        id: prepare
+        if: steps.source.outputs.candidate == 'true'
+        env:
+          INTEGRATION_BRANCH: ${{ steps.source.outputs.branch }}
+          SOURCE_MERGE: ${{ steps.source.outputs.merge-sha }}
+        run: bash "$GITHUB_WORKSPACE/.publisher/scripts/prepare-publication.sh"
+      - name: Calculate release version
+        id: version
+        if: steps.source.outputs.candidate == 'true'
+        env:
+          RELEASE_INTENT: ${{ steps.source.outputs.intent }}
+          VERSIONING: ${{ inputs.versioning }}
+          VERSION_TIMEZONE: ${{ inputs.timezone }}
+        run: node "$GITHUB_WORKSPACE/.publisher/scripts/versions.cjs"
+      - name: Version, test, and build application
+        if: steps.source.outputs.candidate == 'true'
+        uses: ./.publisher/.github/actions/node-project
+        with:
+          version: ${{ steps.version.outputs.version }}
+          test: "true"
+          package-token: ${{ secrets.BT_PACKAGE_TOKEN || github.token }}
+      - name: Create release commit
+        id: release
+        if: steps.source.outputs.candidate == 'true'
+        env:
+          RELEASE_BASE: ${{ steps.prepare.outputs.base }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          SOURCE_TITLE: ${{ steps.source.outputs.title }}
+          SOURCE_PR: ${{ steps.source.outputs.number }}
+          SOURCE_MERGE: ${{ steps.source.outputs.merge-sha }}
+        run: bash "$GITHUB_WORKSPACE/.publisher/scripts/create-release-commit.sh"
+      - name: Promote release commit to main
+        id: promote
+        if: steps.source.outputs.candidate == 'true'
+        run: |
+          set -euo pipefail
+          git push origin HEAD:refs/heads/main
+          echo 'promoted=true' >> "$GITHUB_OUTPUT"
+      - name: Tag release commit
+        if: steps.source.outputs.candidate == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
+          git push origin "refs/tags/$RELEASE_TAG"
+      - name: Publish release image
+        if: steps.source.outputs.candidate == 'true'
+        uses: ./.publisher/.github/actions/publish-image
+      - name: Mark publication complete
+        id: published
+        if: steps.source.outputs.candidate == 'true'
+        run: echo 'complete=true' >> "$GITHUB_OUTPUT"
+      - name: Delete source integration branch
+        id: cleanup
+        if: steps.published.outputs.complete == 'true'
+        continue-on-error: true
+        env:
+          INTEGRATION_BRANCH: ${{ steps.source.outputs.branch }}
+          SOURCE_MERGE: ${{ steps.source.outputs.merge-sha }}
+        run: bash "$GITHUB_WORKSPACE/.publisher/scripts/delete-integration-branch.sh"
+      - name: Advance open integration bases
+        id: refresh
+        if: always() && steps.promote.outputs.promoted == 'true'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {refresh} = require(`${process.env.GITHUB_WORKSPACE}/.publisher/scripts/integration-branches.cjs`);
+            await refresh({github, context, core});
+      - name: Comment on source pull request
+        if: always() && steps.source.outputs.number != ''
+        uses: actions/github-script@v7
+        env:
+          SOURCE_PR: ${{ steps.source.outputs.number }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          PUBLISHED: ${{ steps.published.outputs.complete }}
+          PROMOTED: ${{ steps.promote.outputs.promoted }}
+          CLEANUP_OUTCOME: ${{ steps.cleanup.outcome }}
+          REFRESH_OUTCOME: ${{ steps.refresh.outcome }}
+        with:
+          script: |
+            const {reportPublication} = require(`${process.env.GITHUB_WORKSPACE}/.publisher/scripts/integration-branches.cjs`);
+            await reportPublication({github, context, core});

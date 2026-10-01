@@ -1,181 +1,245 @@
 # Publisher
 
-Reusable GitHub workflow for building, publishing, and deleting ARM64 GHCR container images.
+Reusable GitHub Actions for developing, validating, building and publishing Node applications and Docker images.
 
-Reference the workflow using:
+Employs the following workflows:
+- `pr-route.yml`: Routes pull requests to `merge/*` branches to run validation and integration workflows.
+- `pr-validate.yml`: Validates pull request metadata.
+- `validate-node.yml`: Validates Node applications.
+- `publish-strategy.yml`: Publishes Node applications and Docker images.
 
-```yaml
-uses: broadsheet-technology/publisher/.github/workflows/publish.yml@v4
-```
+## Current policy
 
-## Examples
+- Release branch: `main`.
+- Integration branch: `merge/<PR number>/<source branch>`.
+- PR titles use Conventional Commit syntax.
+- Calendar versioning is the default and needs no release label. Explicit
+  semantic versioning requires exactly one of `release:major`, `release:minor`,
+  `release:patch`, or `release:none`. `release:none` advances the patch version.
+- Bot PRs and PRs labeled `base:main-authorized` may target `main` directly.
+- Node builds use Node 24, `npm ci`, `npm run build`, and production dependency
+  pruning. Validation also runs `npm test`.
+- Images use `ghcr.io/<repository>` and `linux/arm64` by default.
 
-The reusable workflow is the preferred interface. It runs on GitHub's native `ubuntu-24.04-arm` runner, so ARM64 builds do not require QEMU.
+## Pull requests
 
-### Publish
+Call `pr-route.yml` from `pull_request_target` for opened/reopened PRs. It creates
+the PR's integration branch from current `main` and retargets the PR. Routing is
+idempotent and never overwrites an existing integration branch.
 
-Recommended workflow for publishing an image on pushes to `main`:
-
-```yaml
-name: Publish Image
-
-on:
-  push:
-    branches: [main]
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  packages: write
-
-jobs:
-  image:
-    uses: broadsheet-technology/publisher/.github/workflows/publish.yml@v4
-    with:
-      image: ghcr.io/${{ github.repository }}
-      tags: |
-        ${{ github.sha }}
-        latest
-```
-
-The workflow publishes exactly the tags listed under `tags`.
-
-Some other common tag choices:
-
-| Tag                                | Use when                                                                           |
-| ---------------------------------- | ---------------------------------------------------------------------------------- |
-| `${{ github.sha }}`                | You want an immutable tag for the exact commit. Recommended for every publish.     |
-| `latest`                           | You want a moving production tag for the current `main` image.                     |
-| `release-${{ github.run_number }}` | You want a monotonically increasing workflow release tag.                          |
-| `${{ github.ref_name }}`           | You publish from Git tags or named branches and want the Git ref as the image tag. |
-| `v1.2.3`                           | Your workflow computes or receives an explicit semantic version.                   |
-
-### Staging PR Images
-
-To manage development deployments, you can publish a staging image for pull requests driven by a specific label, or other pull request state.
-
-This example publishes `stage-pr-<number>` when a pull request has the `stage` label. It deletes that tag when the label is absent or the pull request closes.
-
-```yaml
-name: Staging Image
-
-on:
-  pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled, closed]
-
-permissions:
-  contents: read
-  packages: write
-  pull-requests: read
-
-jobs:
-  image:
-    uses: broadsheet-technology/publisher/.github/workflows/publish.yml@v4
-    with:
-      image: ghcr.io/${{ github.repository }}
-      tags: >-
-        ${{ github.event.action != 'closed' &&
-            contains(github.event.pull_request.labels.*.name, 'stage') &&
-            format('stage-pr-{0}', github.event.pull_request.number) || '' }}
-      delete-tags: >-
-        ${{ (github.event.action == 'closed' ||
-            !contains(github.event.pull_request.labels.*.name, 'stage')) &&
-            format('stage-pr-{0}', github.event.pull_request.number) || '' }}
-```
-
-## Prepare Node.js Applications on the Worker
-
-Set `prebuild-node: true` to install dependencies and build directly on the native ARM64 worker before Docker packages the prepared files. Set `prune-node: true` to run `npm prune --omit=dev --no-audit` after the build, leaving production dependencies in `node_modules`. The default Node.js version is 24.
+Call `pr-validate.yml` for metadata checks, after routing when both run in the
+same workflow. It reads current PR metadata through the API rather than the
+possibly stale triggering event. Call `validate-node.yml` on `pull_request` to
+install dependencies, run tests, and build. Application code must not run from
+a `pull_request_target` job.
 
 ```yaml
 jobs:
-  image:
-    uses: broadsheet-technology/publisher/.github/workflows/publish.yml@v4
-    with:
-      image: ghcr.io/${{ github.repository }}
-      tags: latest
-      prebuild-node: true
-      prune-node: true
-      node-version: "24"
+  metadata:
+    uses: broadsheet-technology/publisher/.github/workflows/pr-validate.yml@v5
+  application:
+    uses: broadsheet-technology/publisher/.github/workflows/validate-node.yml@v5
     secrets:
       BT_PACKAGE_TOKEN: ${{ secrets.BT_PACKAGE_TOKEN }}
 ```
 
-`BT_PACKAGE_TOKEN` is optional. It is exposed as `NODE_AUTH_TOKEN` only while npm installs dependencies so private `@broadsheet-technology` packages can be installed from GitHub Packages. When the secret is omitted, Publisher uses the caller's `github.token`, preserving the existing prebuild behavior. The package token is never passed to Docker; GHCR login continues to use `github.token`.
+Metadata needs `contents: read` and `pull-requests: read`. Application validation
+needs `contents: read` and `packages: read`. Routing needs `contents: write` and
+`pull-requests: write`. A caller can use `needs: route` to order metadata checks.
 
-Consumers using worker-prepared production dependencies should use a runtime-only Dockerfile that copies the build output and `node_modules` without running npm:
+## Release a Node application
 
-```dockerfile
-FROM node:24-bookworm-slim
-
-WORKDIR /app
-
-COPY --chown=10001:10001 package.json ./
-COPY --chown=10001:10001 dist ./dist
-COPY --chown=10001:10001 node_modules ./node_modules
-
-USER 10001:10001
-
-CMD ["node", "dist/src/index.js"]
+```yaml
+name: Publish Release
+on:
+  push:
+    branches: ["merge/**"]
+permissions:
+  contents: write
+  pull-requests: write
+  packages: write
+jobs:
+  publish:
+    uses: broadsheet-technology/publisher/.github/workflows/publish-strategy.yml@v5
+    secrets:
+      BT_PACKAGE_TOKEN: ${{ secrets.BT_PACKAGE_TOKEN }}
 ```
 
-Native dependencies built on the Ubuntu worker require a compatible Linux/glibc runtime image. Do not copy Ubuntu-built `node_modules` into an Alpine/musl image. If the application has no runtime dependencies, it can instead copy only its compiled output.
+Only a push matching a merged PR's exact integration branch and merge SHA can
+publish. Branch creation/deletion, refresh pushes, recovery commits, and stale
+candidates are skipped. The workflow:
 
-## Dockerfile Build Cache
+1. Merges current `main` into the candidate and fetches release tags.
+2. Calculates the next version using the selected convention and fetched tags.
+3. Writes the version to `package.json` and the project entries in
+   `package-lock.json`, tests, builds, and prunes.
+4. Squashes the validated changes and version update into one commit directly
+   on current `main`, with the PR title and number. Both author and committer
+   use the source merge's author identity. The commit has `pr`,
+   `merge`, and `version` trailers in one contiguous block after a blank line.
+   It is fast-forwarded to `main` and tagged with the same version.
+5. Publishes the prepared checkout with the release SHA, version, and
+   `latest` image tags.
+6. Deletes the integration branch only after image publication succeeds,
+   refreshes other open integration bases, and reports the outcome on the PR.
 
-The publisher imports and exports persistent GitHub Actions BuildKit cache automatically. Dockerfiles that still install Node.js dependencies inside the image should also isolate dependency installation and use an npm cache mount:
+All release steps, including the image push, share one serialization group.
+There is no downstream push-trigger dependency: `GITHUB_TOKEN` pushes do not
+start another push workflow. Images use the generated release commit, not the
+original integration merge SHA. Publisher scripts live outside the application
+checkout and are not included in release commits or Docker contexts.
 
-```dockerfile
-# syntax=docker/dockerfile:1
+Publication and recovery recognize already published candidates by their
+`merge` trailers (or ancestry for older releases), preventing a squash
+release from being published twice or reverted as a failed candidate.
 
-FROM node:20-alpine AS build
-WORKDIR /app
+A failed test/build leaves `main` unchanged. A failure after promotion leaves
+the release on `main`; retry the image workflow on the release tag rather than
+reverting a published candidate. Cleanup and refresh failures are reported
+separately. A successful standalone image retry does not remove a retained
+integration branch automatically.
 
-COPY package.json package-lock.json tsconfig.json ./
+## Version conventions
 
-RUN --mount=type=cache,target=/root/.npm \
-    npm ci --prefer-offline --no-audit
+`publish-strategy.yml` and `pr-validate.yml` accept `versioning`, which defaults
+to `calendar`. To use semantic versioning, pass `versioning: semantic` to both
+workflows.
 
-COPY src ./src
-RUN npm run build
+- `semantic`: increment the newest stable `vX.Y.Z` tag according to the PR's
+  release label, starting from `v0.0.0`. Calendar and prerelease tags are ignored.
+- `calendar`: use `vYY.M.D.N`, where the year has two digits and month/day have
+  no leading zero. The counter is one greater than the highest published tag
+  for that date, or 1 when none exists. Semantic release labels are ignored.
+  For example: `v26.10.1.1`, `v26.10.1.2`, then `v26.10.2.1`.
+
+Calendar publication accepts `timezone` (an IANA timezone, default `UTC`).
+Use `timezone: America/Chicago` to reset the counter at Chicago midnight.
+The date is evaluated once when the serialized release calculates its version,
+so crossing midnight during the build does not change that release's version.
+
+```yaml
+jobs:
+  publish:
+    uses: broadsheet-technology/publisher/.github/workflows/publish-strategy.yml@v5
+    with:
+      timezone: America/Chicago
 ```
 
-Keep dependency manifests before source code so source changes do not invalidate the dependency layer.
+Package files, commit trailers, Git tags, and image tags all retain the exact
+prefixed version. Calendar versions are for applications packaged as images;
+the four-part format is not an npm package's semantic version.
 
-## Inputs
+## Images and staging
 
-| Input           | Required | Default | Description                                                                                   |
-| --------------- | -------- | ------- | --------------------------------------------------------------------------------------------- |
-| `image`         | yes      |         | Full GHCR image name without a tag, e.g. `ghcr.io/broadsheet-technology/my-service`.          |
-| `tags`          | no       | `""`    | Newline- or comma-separated tags to build and publish.                                        |
-| `delete-tags`   | no       | `""`    | Newline- or comma-separated tags to delete from GHCR.                                         |
-| `prebuild-node` | no       | `false` | Run `npm ci` and `npm run build` before building the image.                                   |
-| `prune-node`    | no       | `false` | When prebuilding, prune development dependencies after the build.                             |
-| `node-version`  | no       | `"24"`  | Node.js version used for the optional prebuild.                                               |
+Use `publish.yml` for direct pushes to `main`, manual image retries, and PR
+staging. The workflow infers tags when explicit tags are omitted:
 
-## Secrets
+- A PR labeled `stage` publishes `stage-pr-<number>`.
+- Closing the PR or removing `stage` requests deletion of that tag.
+- Other events publish the checked-out SHA, the package version, and `latest`.
 
-| Secret             | Required | Description                                                                                                            |
-| ------------------ | -------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `BT_PACKAGE_TOKEN` | no       | Token for private GitHub Packages dependencies. Falls back to `github.token`; used only as npm's `NODE_AUTH_TOKEN`.    |
+```yaml
+name: Stage Image
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled, closed]
+permissions:
+  contents: read
+  packages: write
+jobs:
+  image:
+    uses: broadsheet-technology/publisher/.github/workflows/publish.yml@v5
+    with:
+      prebuild-node: true
+    secrets:
+      BT_PACKAGE_TOKEN: ${{ secrets.BT_PACKAGE_TOKEN }}
+```
 
-## Notes
+The same job can be used under `push: {branches: [main]}` and
+`workflow_dispatch` for release image retries. Select the release tag when
+starting a manual retry. Stage publishing is limited to same-repository PRs.
+Deletion-only runs do not check out or build application code.
 
-- Publishing uses the repository root as the Docker build context and `Dockerfile` as the Dockerfile.
-- Publishing always targets `linux/arm64` for every GHCR tag.
-- BuildKit cache is stored in GitHub Actions cache and scoped to the full image name.
-- Build summaries and build-record artifact uploads are disabled.
-- Publishing runs natively on `ubuntu-24.04-arm`; QEMU is not installed.
-- Deletion supports GHCR packages owned by either organizations or personal accounts.
-- Deleting a tag that does not exist, including before a package's first publish, succeeds without output.
-- GHCR lookup failures other than a missing package are reported and fail the workflow.
+| Input | Default | Use |
+| --- | --- | --- |
+| `image` | `ghcr.io/<repository>` | An explicit GHCR package name. |
+| `tags` | inferred | Newline/comma-separated raw tags to publish. |
+| `delete-tags` | inferred for PRs | Newline/comma-separated raw tags to remove. |
+| `prebuild-node` | `false` | Prepare Node output and production dependencies before Docker. |
 
-## Test
+Explicit tags take precedence over inference and support non-Node images.
+The Docker build uses the repository-root `Dockerfile` and prepared checkout
+as its context, with persistent BuildKit caching per image. Node runtime
+Dockerfiles can copy `package*.json`, `node_modules`, and `dist`.
 
-Run the tests with:
+GHCR deletes whole package versions, not individual tags. Cleanup preserves
+versions that also carry tags outside the requested deletion set and emits a
+warning. This prevents stage cleanup from deleting a shared release image.
+Missing packages/versions are idempotent successes; authorization errors fail.
+
+## Authentication
+
+`BT_PACKAGE_TOKEN` is the one optional secret on Node validation, release, and
+image workflows. It falls back to the caller's `github.token` and is supplied
+only to npm package operations, never to Docker. The selected token needs read
+access to private dependencies. GHCR login always uses `github.token`.
+
+Consumers must allow release commits and tags to be pushed by their workflow
+token and provide the `stage` label (plus release labels for semantic
+versioning). Configure
+required metadata/application checks for `merge/**`.
+
+## Recovery and refresh
+
+`recover-publication.yml` accepts `source-pr` and `merge-sha`. It derives the
+integration branch from the PR and checks that the failed merge belongs to it.
+It refuses already-promoted candidates and changed branch tips, then reverts
+the failed merge with a normal fast-forward push. Multi-commit rebase merges
+require manual recovery; use a merge commit for a recoverable first release.
+It applies `publication:failed` and attempts to reopen the source PR. If GitHub
+refuses reopening a merged PR, the comment says to create a follow-up PR.
+
+`refresh-integrations.yml` can be called on direct pushes to `main`. Releases
+also invoke refresh directly after promotion, including when an image push
+fails. Refresh only fast-forwards open integration branches and preserves
+concurrent merges and divergent work.
+
+Release, recovery, refresh, and standalone release-image runs share
+`publish-<repository>` concurrency with `queue: max`. Stage images serialize
+per PR. Do not add the publisher's concurrency group to a caller workflow;
+that would make caller and callee wait on each other.
+
+## Releasing Publisher
+
+Publisher's own major version is declared at the top of
+`.github/workflows/ci.yml`:
+
+```yaml
+env:
+  PUBLISHER_VERSION: v5
+```
+
+For v6, change this value to `v6` and update the reusable workflows' Publisher
+checkout refs to `v6`. Tests enforce that these refs match the declared version.
+Update the usage examples and changelog with the new major version as well.
+This setting is independent of consumers' calendar or semantic versioning.
+
+Merge Publisher changes to `main`. After the Publisher CI test job passes on a
+push to `main`, the release job creates or updates the moving `v5` tag to that
+tested commit. PRs and other branches cannot update the release tag; outdated
+runs cannot move it back after a newer main commit has been tested.
+
+All reusable workflows check out Publisher's scripts and composite actions
+from `v5`. Merge and release Publisher before merging consumers that switch
+to the v5 interface. Existing `v1` through `v4` tags are unchanged.
+
+## Development
 
 ```sh
-./tests/plan-tags.test.sh
-./tests/delete-tags.test.sh
-./tests/workflow.test.sh
+node --test tests/*.test.cjs
 ```
+
+Tests use Node, Ruby's YAML parser, npm, and temporary local Git repositories;
+they do not publish images or contact GitHub. They cover routing races, current
+metadata, version updates before validation, exact image tags, shared-tag
+cleanup, concurrent release branches, failed promotion, and recovery.

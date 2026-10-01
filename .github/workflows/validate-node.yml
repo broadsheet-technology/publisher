@@ -1,0 +1,32 @@
+name: Validate Node Application
+
+on:
+  workflow_call:
+    secrets:
+      BT_PACKAGE_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  application:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out publisher automation
+        uses: actions/checkout@v4
+        with:
+          repository: broadsheet-technology/publisher
+          ref: v5
+          path: .publisher
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          path: candidate
+          persist-credentials: false
+      - name: Test and build application
+        uses: ./.publisher/.github/actions/node-project
+        with:
+          test: "true"
+          package-token: ${{ secrets.BT_PACKAGE_TOKEN || github.token }}
